@@ -1,0 +1,12 @@
+# Secrets — never commit
+.env
+docker/.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Docker
+*.log
+.tmp
+
