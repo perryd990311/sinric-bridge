@@ -1,6 +1,7 @@
 ---
 name: "Code Inspector"
 description: "Analytical code inspector for home automation systems. Provides structured, checklist-based code reviews with clear scoring and improvement metrics."
+model: "gpt-5.4-mini"
 ---
 
 # Code Inspector Agent (GPT)

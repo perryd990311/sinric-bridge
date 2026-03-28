@@ -1,6 +1,7 @@
 ---
 name: "Debugger"
 description: "Debugging specialist for home automation systems. Diagnoses runtime issues through systematic error analysis, API troubleshooting, environment verification, and log analysis."
+model: "sonnet"
 ---
 
 # Debugger Agent

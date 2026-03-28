@@ -1,6 +1,6 @@
----
 name: "System Troubleshooter"
 description: "Systematic troubleshooter for home automation systems. Uses rigorous diagnostic methodology and decision trees to isolate and resolve issues."
+model: "gpt-5.4"
 ---
 
 # System Troubleshooter Agent (GPT)

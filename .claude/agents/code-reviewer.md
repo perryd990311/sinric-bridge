@@ -1,6 +1,7 @@
 ---
 name: "Code Reviewer"
 description: "Code review expert for home automation systems. Analyzes code for security, quality, error handling, testing, performance, dependencies, and documentation."
+model: "haiku"
 ---
 
 # Code Reviewer Agent
