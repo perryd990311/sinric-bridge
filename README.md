@@ -1,6 +1,6 @@
 # Home Automation – WiFi SSID Voice Control
 
-[![CI](https://github.com/YOUR_USERNAME/home-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/home-automation/actions/workflows/ci.yml)
+[![CI](https://github.com/perryd990311/sinric-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/perryd990311/sinric-bridge/actions/workflows/ci.yml)
 
 ## Goal
 Use an Alexa voice command to toggle a WiFi SSID on/off via the UniFi gateway API.
