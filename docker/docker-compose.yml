@@ -1,22 +1,23 @@
 # docker-compose.yml – deploy on Synology NAS
-# Place this file in /volume1/docker/home-automation/
+# Place this file in /volume1/docker/sinric-bridge/
 #
 # Quick start:
 #   cp .env.example .env   # fill in your secrets
 #   docker compose up -d
 #
-# Full setup: see copilot_instructions.md
+# Full setup: see python-service/README.md
 
 services:
 
-  # ── Python FastAPI WiFi Toggle (Sinric Pro) ──────────────────────────────
+  # ── Sinric Pro Bridge (FastAPI multi-service) ─────────────────────────────
   # Connects OUTBOUND to Sinric Pro via WebSocket — no port forwarding needed.
-  # Alexa Routine  →  Sinric virtual switch  →  WebSocket  →  this  →  UniFi API
-  wifi-toggle:
+  # Alexa Routine → Sinric virtual device → WebSocket → this → handler → API
+  sinric-bridge:
     build:
       context: ../python-service
       dockerfile: Dockerfile
-    container_name: wifi-toggle
+    image: sinric-bridge
+    container_name: sinric-bridge
     ports:
       - "127.0.0.1:8000:8000"          # Bind to localhost only — no external access
     env_file:
@@ -25,10 +26,9 @@ services:
       - UNIFI_HOST=${UNIFI_HOST:-192.168.1.1}
       - UNIFI_API_KEY=${UNIFI_API_KEY:?Set UNIFI_API_KEY in .env}
       - UNIFI_SITE_ID=${UNIFI_SITE_ID:?Set UNIFI_SITE_ID in .env}
-      - UNIFI_WLAN_ID=${UNIFI_WLAN_ID:?Set UNIFI_WLAN_ID in .env}
       - SINRIC_APP_KEY=${SINRIC_APP_KEY:?Set SINRIC_APP_KEY in .env}
       - SINRIC_APP_SECRET=${SINRIC_APP_SECRET:?Set SINRIC_APP_SECRET in .env}
-      - SINRIC_DEVICE_ID=${SINRIC_DEVICE_ID:?Set SINRIC_DEVICE_ID in .env}
+      - SERVICES_CONFIG=${SERVICES_CONFIG:?Set SERVICES_CONFIG in .env}
       - API_TOKEN=${API_TOKEN:?Set API_TOKEN in .env}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-127.0.0.1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
     restart: unless-stopped
@@ -53,6 +53,6 @@ networks:
 # ────────────────────────────────────────────────────────────────────────────
 # Commands:
 #   Start service:                    docker compose up -d
-#   View logs:                        docker compose logs -f wifi-toggle
+#   View logs:                        docker compose logs -f sinric-bridge
 #   Restart after config change:      docker compose up -d --force-recreate
 #   Stop:                             docker compose down

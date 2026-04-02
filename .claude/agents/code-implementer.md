@@ -12,21 +12,18 @@ We don't always need to implement the requests from the code-reviewer agent.  So
 
 ### Connection Details
 **SSH Target:** perryd@172.20.0.250  
-**Elevation:** `su -` to root (required for Docker commands)  
-**Deployment Directory:** `/volume1/docker/wifiSSIDVC/`  
-**Files in Directory:** `.env`, `compose.yaml`, `Dockerfile`, `main.py`, `requirements.txt`
+**Elevation:** None required — `perryd` user has direct Docker access  
+**Deployment Directory:** `/volume1/docker/sinric-bridge/`  
+**Docker binary:** `/usr/local/bin/docker` — PATH is empty in non-interactive SSH, always use full path  
+**Files in Directory:** `.env`, `compose.yaml`, and the cloned repo (Dockerfile at `python-service/Dockerfile`)
 
 ### SSH Session Management
 ```bash
 # Initial connection
 ssh -i ~/.ssh/id_ed25519 perryd@172.20.0.250 -p 22
 
-# Elevate to root
-su -
-# (Enter root password when prompted)
-
-# Verify Docker access
-docker ps  # Should list running containers
+# Verify Docker access (use full path — PATH is empty in non-interactive SSH)
+/usr/local/bin/docker ps  # Should list running containers
 ```
 
 ### Safety First
@@ -45,7 +42,7 @@ docker ps  # Should list running containers
 4. **Plan rollback** - Document how to revert if needed
 
 ### Phase 2: Deployment
-1. **Connect to NAS** - SSH + su to root
+1. **Connect to NAS** - SSH as perryd (no elevation needed)
 2. **Stop affected services** - `docker-compose down` or `docker stop`
 3. **Update files** - Copy new Dockerfile, requirements.txt, etc.
 4. **Rebuild images** - `docker-compose build`
@@ -75,8 +72,8 @@ docker logs -f container_name  # Follow logs
 docker logs --tail 50 container_name  # Last 50 lines
 
 # Rebuild container
-cd /volume1/docker/wifiSSIDVC
-docker-compose -f compose.yaml build
+cd /volume1/docker/sinric-bridge
+/usr/local/bin/docker compose -f compose.yaml build
 
 # Restart container
 docker-compose -f compose.yaml restart
@@ -125,15 +122,15 @@ When implementing updates:
 
 3. **Deployment Steps**
    - SSH to NAS: `perryd@172.20.0.250`
-   - Navigate to: `/volume1/docker/wifiSSIDVC`
-   - Modify files: `.env`, `compose.yaml`, `Dockerfile`, `main.py`, `requirements.txt`
-   - Rebuild: `docker-compose -f compose.yaml build`
-   - Restart: `docker-compose -f compose.yaml up -d`
+   - Navigate to: `/volume1/docker/sinric-bridge/`
+   - Modify files: `.env`, `compose.yaml`, or source in `python-service/`
+   - Rebuild: `/usr/local/bin/docker compose -f compose.yaml build`
+   - Restart: `/usr/local/bin/docker compose -f compose.yaml up -d`
    - Verify: Check logs and container status
 
 4. **Repository vs Synology**
    - **Repo structure:** Project files organized by component
-   - **Synology structure:** All files in `/volume1/docker/wifiSSIDVC/`
+   - **Synology structure:** Cloned repo + `.env` + `compose.yaml` in `/volume1/docker/sinric-bridge/`
    - These structures intentionally differ—maintain both as-is
 
 ## Best Practices
