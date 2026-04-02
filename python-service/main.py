@@ -123,18 +123,6 @@ _SERVICE_HANDLER_CLASSES: dict = {
 }
 
 
-async def _verify_handler(handler, name: str) -> bool:
-    try:
-        ok = await handler.verify_configuration()
-        if not ok:
-            logger.warning("Handler '%s' failed verification — skipping", name)
-            return False
-        return True
-    except Exception:
-        logger.exception("Handler '%s' verification raised error — skipping", name)
-        return False
-
-
 def _build_handlers() -> dict:
     """Instantiate a ServiceHandler for each configured service."""
     handlers: dict = {}
@@ -147,14 +135,28 @@ def _build_handlers() -> dict:
             )
             continue
         handler = cls(device_id, svc["type"], svc["config"])
-        if not asyncio.run(_verify_handler(handler, device_id)):
-            continue
         handlers[device_id] = handler
         logger.info("Registered handler: %s (%s) → %s", device_id, svc["name"], svc["type"])
     return handlers
 
 
 HANDLERS: dict = _build_handlers()
+
+
+async def _verify_handlers():
+    """Verify all handler configurations during startup (async-safe)."""
+    to_remove = []
+    for device_id, handler in HANDLERS.items():
+        try:
+            ok = await handler.verify_configuration()
+            if not ok:
+                logger.warning("Handler '%s' failed verification — will be skipped", device_id)
+                to_remove.append(device_id)
+        except Exception:
+            logger.exception("Handler '%s' verification raised error — will be skipped", device_id)
+            to_remove.append(device_id)
+    for device_id in to_remove:
+        del HANDLERS[device_id]
 
 
 # ── Local network access control ────────────────────────────────────────────
@@ -323,6 +325,8 @@ def _run_sinric():
 # ── FastAPI lifecycle ────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Verify handler configurations now that we're inside an async context
+    await _verify_handlers()
     # Start Sinric in a daemon thread so it doesn't block uvicorn
     sinric_thread = Thread(target=_run_sinric, daemon=True, name="sinric-pro")
     sinric_thread.start()
