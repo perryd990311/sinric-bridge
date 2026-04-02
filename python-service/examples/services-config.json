@@ -1,0 +1,14 @@
+[
+  {
+    "device_id": "wifi-guest",
+    "type": "wifi_ssid",
+    "name": "Guest WiFi",
+    "config": { "wlan_id": "YOUR-GUEST-WLAN-UUID-HERE" }
+  },
+  {
+    "device_id": "wifi-iot",
+    "type": "wifi_ssid",
+    "name": "IoT Network",
+    "config": { "wlan_id": "YOUR-IOT-WLAN-UUID-HERE" }
+  }
+]

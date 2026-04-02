@@ -12,10 +12,11 @@ Environment variables:
     UNIFI_HOST        - UniFi controller IP/hostname (default: 192.168.1.1)
     UNIFI_API_KEY     - UniFi API key for integration endpoints
     UNIFI_SITE_ID     - UniFi site UUID
-    UNIFI_WLAN_ID     - WiFi broadcast UUID to toggle
   SINRIC_APP_KEY    - Sinric Pro app key (from portal)
   SINRIC_APP_SECRET - Sinric Pro app secret (from portal)
-  SINRIC_DEVICE_ID  - Sinric Pro virtual switch device ID
+  SERVICES_CONFIG  - JSON array of service definitions, e.g.:
+                     [{"device_id":"wifi-guest","type":"wifi_ssid",
+                       "name":"Guest WiFi","config":{"wlan_id":"uuid"}}]
   API_TOKEN         - Shared secret for local health/manual endpoints
   ALLOWED_HOSTS     - Comma-separated IPs allowed to hit local endpoints
                       (default: 127.0.0.1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8)
@@ -27,10 +28,7 @@ import base64
 import hashlib
 import hmac
 import time
-import urllib.request
-import urllib.error
 import json
-import ssl
 import logging
 import ipaddress
 from contextlib import asynccontextmanager
@@ -39,6 +37,7 @@ from threading import Thread
 import websockets
 from fastapi import FastAPI, HTTPException, Security, Depends, Request
 from fastapi.security import APIKeyHeader
+from services.wifi_ssid_handler import WiFiSSIDHandler
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -51,10 +50,8 @@ logger = logging.getLogger("wifi-toggle")
 UNIFI_HOST        = os.getenv("UNIFI_HOST", "192.168.1.1")
 UNIFI_API_KEY     = os.getenv("UNIFI_API_KEY", "")
 UNIFI_SITE_ID     = os.getenv("UNIFI_SITE_ID") or os.getenv("UNIFI_SITE", "")
-UNIFI_WLAN_ID     = os.getenv("UNIFI_WLAN_ID", "")
 SINRIC_APP_KEY    = os.getenv("SINRIC_APP_KEY", "")
 SINRIC_APP_SECRET = os.getenv("SINRIC_APP_SECRET", "")
-SINRIC_DEVICE_ID  = os.getenv("SINRIC_DEVICE_ID", "")
 API_TOKEN         = os.getenv("API_TOKEN", "")
 ALLOWED_HOSTS     = os.getenv(
     "ALLOWED_HOSTS",
@@ -70,6 +67,94 @@ for entry in ALLOWED_HOSTS.split(","):
             _allowed_networks.append(ipaddress.ip_network(entry, strict=False))
         except ValueError:
             logger.warning("Ignoring invalid ALLOWED_HOSTS entry: %s", entry)
+
+
+# ── Multi-service registry ───────────────────────────────────────────────────
+_raw_services = os.getenv("SERVICES_CONFIG", "[]")
+try:
+    _services_list = json.loads(_raw_services)
+except json.JSONDecodeError as e:
+    logger.error("SERVICES_CONFIG is not valid JSON: %s", e)
+    _services_list = []
+
+# Build registry: {device_id → {type, name, config}}
+SERVICES: dict = {}
+for _svc in _services_list:
+    _did = _svc.get("device_id", "").strip()
+    if not _did:
+        logger.warning("Skipping service entry with missing device_id: %s", _svc)
+        continue
+    if _did in SERVICES:
+        logger.warning("Duplicate device_id %r — skipping second entry", _did)
+        continue
+    if not _svc.get("type") or "config" not in _svc or not isinstance(_svc.get("config"), dict):
+        logger.warning("Service %r has invalid or missing 'type'/'config' — skipping", _did)
+        continue
+    SERVICES[_did] = {
+        "type": _svc["type"],
+        "name": _svc.get("name", _did),
+        "config": _svc["config"],
+    }
+
+if not SERVICES:
+    logger.warning(
+        "No services configured — set SERVICES_CONFIG env var as a JSON array. "
+        'Example: [{"device_id":"wifi-guest","type":"wifi_ssid",'
+        '"name":"Guest WiFi","config":{"wlan_id":"uuid-here"}}]'
+    )
+
+# Detect legacy single-service env vars and warn
+_legacy_device_id = os.getenv("SINRIC_DEVICE_ID")
+_legacy_wlan_id = os.getenv("UNIFI_WLAN_ID")
+if _legacy_device_id or _legacy_wlan_id:
+    logger.error(
+        "Detected legacy env vars (SINRIC_DEVICE_ID=%s, UNIFI_WLAN_ID=%s). "
+        "These are no longer supported. "
+        "Migrate to SERVICES_CONFIG JSON array. See examples/services-config.json.",
+        "set" if _legacy_device_id else "not set",
+        "set" if _legacy_wlan_id else "not set",
+    )
+
+
+# ── Handler registry ─────────────────────────────────────────────────────────
+_SERVICE_HANDLER_CLASSES: dict = {
+    "wifi_ssid": WiFiSSIDHandler,
+    # Add more service types here as new handlers are created
+}
+
+
+async def _verify_handler(handler, name: str) -> bool:
+    try:
+        ok = await handler.verify_configuration()
+        if not ok:
+            logger.warning("Handler '%s' failed verification — skipping", name)
+            return False
+        return True
+    except Exception:
+        logger.exception("Handler '%s' verification raised error — skipping", name)
+        return False
+
+
+def _build_handlers() -> dict:
+    """Instantiate a ServiceHandler for each configured service."""
+    handlers: dict = {}
+    for device_id, svc in SERVICES.items():
+        cls = _SERVICE_HANDLER_CLASSES.get(svc["type"])
+        if cls is None:
+            logger.warning(
+                "No handler registered for service type %r (device %s) — skipping",
+                svc["type"], device_id,
+            )
+            continue
+        handler = cls(device_id, svc["type"], svc["config"])
+        if not asyncio.run(_verify_handler(handler, device_id)):
+            continue
+        handlers[device_id] = handler
+        logger.info("Registered handler: %s (%s) → %s", device_id, svc["name"], svc["type"])
+    return handlers
+
+
+HANDLERS: dict = _build_handlers()
 
 
 # ── Local network access control ────────────────────────────────────────────
@@ -99,100 +184,6 @@ def verify_local_network(request: Request):
     if not _is_allowed_ip(client_ip):
         logger.warning("Blocked request from non-local IP: %s", client_ip)
         raise HTTPException(status_code=403, detail="Access denied — local network only")
-
-
-# ── UniFi API (LAN-only, self-signed cert) ───────────────────────────────────
-# UniFi controllers use self-signed certs by default.  The connection stays
-# on the LAN so this is acceptable — the gateway is trusted infrastructure.
-_ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode = ssl.CERT_NONE
-
-
-def _unifi_request(method: str, path: str, payload: dict | None = None) -> dict:
-    """Call the UniFi integration API using an X-API-KEY header."""
-    if not UNIFI_API_KEY:
-        raise ValueError("UNIFI_API_KEY not set")
-
-    url = f"https://{UNIFI_HOST}{path}"
-    data = None if payload is None else json.dumps(payload).encode()
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "X-API-KEY": UNIFI_API_KEY,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        method=method,
-    )
-    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_ctx))
-    try:
-        with opener.open(req) as resp:
-            body = resp.read()
-            status = resp.status
-    except urllib.error.HTTPError as exc:
-        body = exc.read()
-        status = exc.code
-        logger.error(
-            "UniFi %s %s → HTTP %s: %s",
-            method, path, status, body[:500].decode(errors="replace"),
-        )
-        raise
-
-    if not body:
-        return {}
-
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError:
-        logger.error(
-            "UniFi %s %s → HTTP %s non-JSON body: %s",
-            method, path, status, body[:500].decode(errors="replace"),
-        )
-        raise
-
-
-def _get_wlan_path() -> str:
-    if not UNIFI_SITE_ID:
-        raise ValueError("UNIFI_SITE_ID not set")
-    if not UNIFI_WLAN_ID:
-        raise ValueError("UNIFI_WLAN_ID not set")
-    return f"/proxy/network/integration/v1/sites/{UNIFI_SITE_ID}/wifi/broadcasts/{UNIFI_WLAN_ID}"
-
-
-def _extract_wlan_payload(data: dict) -> dict:
-    """Normalize UniFi GET response into the writable WiFi broadcast document.
-
-    The integration API returns the broadcast object directly (no wrapper).
-    Strip read-only fields that the PUT endpoint does not accept.
-    """
-    # Unwrap legacy/alternative response shapes just in case
-    if isinstance(data.get("data"), list) and data["data"]:
-        data = data["data"][0]
-    elif isinstance(data.get("data"), dict):
-        data = data["data"]
-
-    # Remove fields present in GET responses that are not valid PUT request body fields
-    _read_only = {"id", "metadata"}
-    return {k: v for k, v in data.items() if k not in _read_only}
-
-
-def set_wlan_state(enabled: bool) -> dict:
-    wlan = _extract_wlan_payload(get_wlan_details())
-    wlan["enabled"] = enabled
-    return _unifi_request("PUT", _get_wlan_path(), wlan)
-
-
-def get_wlan_details() -> dict:
-    """Return the current WiFi broadcast configuration."""
-    return _unifi_request("GET", _get_wlan_path())
-
-
-def get_wlan_state() -> bool:
-    """Return current SSID enabled state."""
-    wlan = _extract_wlan_payload(get_wlan_details())
-    return bool(wlan["enabled"])
 
 
 # ── Sinric Pro WebSocket (raw protocol, no SDK) ──────────────────────────────
@@ -229,9 +220,10 @@ def _sinric_verify(msg: dict) -> bool:
 
 async def _sinric_loop():
     """Maintain a persistent, auto-reconnecting WebSocket to Sinric Pro."""
+    device_list = ",".join(HANDLERS.keys()) if HANDLERS else ""
     headers = [
         ("appKey", SINRIC_APP_KEY),
-        ("deviceIds", SINRIC_DEVICE_ID),
+        ("deviceIds", device_list),
         ("platform", "python"),
         ("version", "3.1.0"),
     ]
@@ -243,10 +235,14 @@ async def _sinric_loop():
                 ping_interval=30,
                 ping_timeout=10,
             ) as ws:
-                logger.info("Sinric Pro WebSocket connected")
+                logger.info("Sinric Pro WebSocket connected (%d device(s))", len(SERVICES))
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        logger.warning("Received non-JSON Sinric frame, ignoring: %.100s", raw)
+                        continue
+                    try:
                         if not _sinric_verify(msg):
                             logger.warning("Ignoring Sinric message with invalid signature")
                             continue
@@ -257,43 +253,49 @@ async def _sinric_loop():
                         device_id = payload.get("deviceId", "")
                         value = payload.get("value", {})
 
-                        if action == "setPowerState" and device_id == SINRIC_DEVICE_ID:
-                            state = value.get("state", "")
-                            logger.info(
-                                "Sinric setPowerState: device=%s state=%s",
-                                device_id, state,
+                        handler = HANDLERS.get(device_id)
+                        if handler is None:
+                            logger.warning(
+                                "Sinric message for unknown device %r — ignoring", device_id
                             )
-                            try:
-                                set_wlan_state(state.lower() == "on")
-                                success = True
-                            except Exception:
-                                logger.exception("Failed to set WLAN state")
-                                success = False
+                            continue
 
-                            # Match official Sinric SDK response shape.
-                            resp_payload = {
-                                "action": payload.get("action", "setPowerState"),
-                                "clientId": payload.get("clientId", SINRIC_APP_KEY),
-                                "createdAt": int(time.time()),
-                                "deviceId": payload.get("deviceId", device_id),
-                                "message": "OK" if success else "Request failed",
-                                "replyToken": payload.get("replyToken", ""),
-                                "scope": payload.get("scope", "device"),
-                                "success": success,
-                                "type": "response",
-                                "value": payload.get("value", {"state": state}),
-                            }
-                            if "instanceId" in payload:
-                                resp_payload["instanceId"] = payload["instanceId"]
+                        logger.info(
+                            "Sinric %s: device=%s type=%s",
+                            action, device_id, handler.service_type,
+                        )
+                        try:
+                            result = await handler.handle_action(action, value)
+                            success = result.get("success", False)
+                            result_value = result.get("value", {})
+                        except Exception:
+                            logger.exception("Handler %s raised an exception", device_id)
+                            success = False
+                            result_value = {}
 
-                            await ws.send(json.dumps({
-                                "header": msg.get("header", {
-                                    "payloadVersion": 2,
-                                    "signatureVersion": 1,
-                                }),
-                                "payload": resp_payload,
-                                "signature": {"HMAC": _sinric_sign(resp_payload)},
-                            }))
+                        resp_payload = {
+                            "action": action,
+                            "clientId": payload.get("clientId", SINRIC_APP_KEY),
+                            "createdAt": int(time.time()),
+                            "deviceId": device_id,
+                            "message": "OK" if success else "Request failed",
+                            "replyToken": payload.get("replyToken", ""),
+                            "scope": payload.get("scope", "device"),
+                            "success": success,
+                            "type": "response",
+                            "value": result_value,
+                        }
+                        if "instanceId" in payload:
+                            resp_payload["instanceId"] = payload["instanceId"]
+
+                        await ws.send(json.dumps({
+                            "header": msg.get("header", {
+                                "payloadVersion": 2,
+                                "signatureVersion": 1,
+                            }),
+                            "payload": resp_payload,
+                            "signature": {"HMAC": _sinric_sign(resp_payload)},
+                        }))
                     except Exception:
                         logger.exception("Error handling Sinric Pro message")
 
@@ -305,15 +307,13 @@ async def _sinric_loop():
 
 
 def _run_sinric():
-    """Run the Sinric Pro WebSocket loop in a background thread."""
-    if not all([SINRIC_APP_KEY, SINRIC_APP_SECRET, SINRIC_DEVICE_ID]):
-        logger.error(
-            "Sinric Pro not configured — set SINRIC_APP_KEY, "
-            "SINRIC_APP_SECRET, and SINRIC_DEVICE_ID"
-        )
+    if not all([SINRIC_APP_KEY, SINRIC_APP_SECRET]):
+        logger.error("Sinric Pro not configured — set SINRIC_APP_KEY and SINRIC_APP_SECRET")
         return
+    if not SERVICES:
+        logger.warning("No services configured — Sinric Pro loop will connect but route no messages")
 
-    logger.info("Starting Sinric Pro WebSocket client (device: %s)", SINRIC_DEVICE_ID)
+    logger.info("Starting Sinric Pro WebSocket client (%d service(s))", len(SERVICES))
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(_sinric_loop())
@@ -331,7 +331,7 @@ async def lifespan(app: FastAPI):
     logger.info("Service shutting down")
 
 
-app = FastAPI(title="UniFi WiFi Toggle", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Home Automation Multi-Service", version="3.0.0", lifespan=lifespan)
 
 
 # ── Local-only endpoints (for manual/debug use from LAN) ────────────────────
@@ -340,62 +340,104 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/wifi/details")
-async def wifi_details(
+@app.get("/services")
+def list_services(_net: None = Depends(verify_local_network)):
+    """List all registered services (local network only)."""
+    return {
+        "count": len(SERVICES),
+        "services": [
+            {"device_id": did, "type": svc["type"], "name": svc["name"]}
+            for did, svc in SERVICES.items()
+        ],
+    }
+
+
+@app.get("/service/{device_id}/details")
+async def service_details(
+    device_id: str,
     request: Request,
     _net: None = Depends(verify_local_network),
     _key: str = Depends(verify_token),
 ):
-    """Return raw WiFi broadcast details from UniFi (local network only)."""
+    """Return current state/details for any registered service."""
+    handler = HANDLERS.get(device_id)
+    if handler is None:
+        raise HTTPException(status_code=404, detail=f"Service {device_id!r} not found")
     try:
-        result = get_wlan_details()
-        logger.info("Manual /wifi/details from %s", request.client.host)
-        return {"details": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        details = await handler.get_details()
+        logger.info("Manual /service/%s/details from %s", device_id, request.client.host)
+        return {"device_id": device_id, "type": SERVICES[device_id]["type"], "details": details}
+    except Exception:
+        logger.exception("Error handling request for device %s", device_id)
+        raise HTTPException(status_code=500, detail="Internal error — check service logs")
 
 
-@app.post("/wifi/on")
-async def wifi_on(
+@app.post("/service/{device_id}/on")
+async def service_on(
+    device_id: str,
     request: Request,
     _net: None = Depends(verify_local_network),
     _key: str = Depends(verify_token),
 ):
-    """Enable the configured SSID (local network only)."""
+    """Turn on a registered service device."""
+    handler = HANDLERS.get(device_id)
+    if handler is None:
+        raise HTTPException(status_code=404, detail=f"Service {device_id!r} not found")
     try:
-        result = set_wlan_state(True)
-        logger.info("Manual /wifi/on from %s", request.client.host)
-        return {"action": "on", "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = await handler.handle_action("setPowerState", {"state": "On"})
+        if not result.get("success"):
+            raise HTTPException(status_code=502, detail=result.get("message", "Operation failed"))
+        logger.info("Manual /service/%s/on from %s", device_id, request.client.host)
+        return {"action": "on", "device_id": device_id, **result}
+    except Exception:
+        logger.exception("Error handling request for device %s", device_id)
+        raise HTTPException(status_code=500, detail="Internal error — check service logs")
 
 
-@app.post("/wifi/off")
-async def wifi_off(
+@app.post("/service/{device_id}/off")
+async def service_off(
+    device_id: str,
     request: Request,
     _net: None = Depends(verify_local_network),
     _key: str = Depends(verify_token),
 ):
-    """Disable the configured SSID (local network only)."""
+    """Turn off a registered service device."""
+    handler = HANDLERS.get(device_id)
+    if handler is None:
+        raise HTTPException(status_code=404, detail=f"Service {device_id!r} not found")
     try:
-        result = set_wlan_state(False)
-        logger.info("Manual /wifi/off from %s", request.client.host)
-        return {"action": "off", "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = await handler.handle_action("setPowerState", {"state": "Off"})
+        if not result.get("success"):
+            raise HTTPException(status_code=502, detail=result.get("message", "Operation failed"))
+        logger.info("Manual /service/%s/off from %s", device_id, request.client.host)
+        return {"action": "off", "device_id": device_id, **result}
+    except Exception:
+        logger.exception("Error handling request for device %s", device_id)
+        raise HTTPException(status_code=500, detail="Internal error — check service logs")
 
 
-@app.post("/wifi/toggle")
-async def wifi_toggle(
+@app.post("/service/{device_id}/toggle")
+async def service_toggle(
+    device_id: str,
     request: Request,
     _net: None = Depends(verify_local_network),
     _key: str = Depends(verify_token),
 ):
-    """Auto-detect current state and flip it (local network only)."""
+    """Toggle a registered service device (auto-detect current state)."""
+    handler = HANDLERS.get(device_id)
+    if handler is None:
+        raise HTTPException(status_code=404, detail=f"Service {device_id!r} not found")
     try:
-        current = get_wlan_state()
-        result = set_wlan_state(not current)
-        logger.info("Manual /wifi/toggle from %s: %s→%s", request.client.host, current, not current)
-        return {"action": "toggle", "was": current, "now": not current, "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        current = await handler.get_state()
+        new_state = "Off" if current else "On"
+        result = await handler.handle_action("setPowerState", {"state": new_state})
+        if not result.get("success"):
+            raise HTTPException(status_code=502, detail=result.get("message", "Operation failed"))
+        logger.info(
+            "Manual /service/%s/toggle from %s: %s→%s",
+            device_id, request.client.host, current, new_state,
+        )
+        return {"action": "toggle", "device_id": device_id, "was": current, "now": new_state == "On", **result}
+    except Exception:
+        logger.exception("Error handling request for device %s", device_id)
+        raise HTTPException(status_code=500, detail="Internal error — check service logs")

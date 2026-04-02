@@ -1,0 +1,45 @@
+version: "3.9"
+
+# Multi-service example for wifi-toggle.
+#
+# SERVICES_CONFIG is a JSON array of service definitions, each with:
+#   device_id  - Sinric Pro virtual switch / device ID (unique per service)
+#   type       - handler type: currently only "wifi_ssid" is supported
+#   name       - human-readable label used in /services API response
+#   config     - type-specific settings (wlan_id for wifi_ssid)
+#
+# Escape for docker-compose by wrapping the JSON value in single quotes.
+# Do NOT commit SINRIC_APP_KEY, SINRIC_APP_SECRET, or API_TOKEN to source control.
+# Use a .env file (in .gitignore) or a Docker secret for those values.
+
+services:
+  wifi-toggle:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # UniFi controller (shared across all WiFi services)
+      UNIFI_HOST: "192.168.1.1"
+      UNIFI_API_KEY: "${UNIFI_API_KEY}"
+      UNIFI_SITE_ID: "${UNIFI_SITE_ID}"
+
+      # Sinric Pro credentials
+      SINRIC_APP_KEY: "${SINRIC_APP_KEY}"
+      SINRIC_APP_SECRET: "${SINRIC_APP_SECRET}"
+
+      # Local API token
+      API_TOKEN: "${API_TOKEN}"
+
+      # Allowed CIDRs for local endpoints
+      ALLOWED_HOSTS: "127.0.0.1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
+
+      # Multi-service definitions (JSON array, single-line, single-quoted)
+      # Replace wlan_id UUIDs with your actual UniFi WiFi broadcast UUIDs.
+      SERVICES_CONFIG: >-
+        [
+          {"device_id": "wifi-guest", "type": "wifi_ssid", "name": "Guest WiFi",  "config": {"wlan_id": "YOUR-GUEST-WLAN-UUID"}},
+          {"device_id": "wifi-iot",   "type": "wifi_ssid", "name": "IoT Network", "config": {"wlan_id": "YOUR-IOT-WLAN-UUID"}}
+        ]
