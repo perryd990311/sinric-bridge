@@ -64,11 +64,11 @@ chmod 600 .env    # Owner-read only — protect credentials
 UNIFI_HOST=192.168.1.1
 UNIFI_API_KEY=your-unifi-api-key
 UNIFI_SITE_ID=paste-site-id-here
-UNIFI_WLAN_ID=paste-wlan-id-here
 
 SINRIC_APP_KEY=paste-app-key-here
 SINRIC_APP_SECRET=paste-app-secret-here
-SINRIC_DEVICE_ID=paste-device-id-here
+
+SERVICES_CONFIG=[{"device_id":"paste-sinric-device-id-here","type":"wifi_ssid","name":"WiFi Toggle","config":{"wlan_id":"paste-unifi-wlan-id-here"}}]
 
 API_TOKEN=paste-generated-token-here
 ```
@@ -89,7 +89,7 @@ cd /volume1/docker/home-automation/docker
 docker compose up -d
 
 # Verify:
-docker compose logs -f wifi-toggle
+docker compose logs -f sinric-bridge
 # Look for: "Starting Sinric Pro WebSocket client"
 # Look for: "Service started — Sinric Pro WebSocket + local API ready"
 ```
@@ -157,10 +157,6 @@ This setup has **no inbound attack surface** by design. Additional hardening:
 | Router audit | Confirm **no** port forwarding rules point to the Synology for this service |
 ```
 
-Then say: **"Alexa, trigger WiFi off"**
-
-> The word **"trigger"** is required for IFTTT Alexa phrases.
-
 ---
 
 ## Troubleshooting
@@ -168,8 +164,8 @@ Then say: **"Alexa, trigger WiFi off"**
 | Symptom | Check |
 |---|---|
 | `curl /health` times out | Container not running — `docker compose ps` |
-| `403 Invalid API key` | `X-API-Key` doesn't match `API_TOKEN` in compose |
-| SSID doesn't change | `UNIFI_WLAN_ID` is blank or wrong — rerun Step 1 |
-| IFTTT activity log shows webhook error | Run the `curl` test manually to see the raw error |
-| Alexa says it couldn't reach IFTTT | Re-link Amazon Alexa service in IFTTT settings |
-| ngrok URL stopped working | Restart ngrok or switch to DuckDNS |
+| `403 Invalid API key` | `X-API-Key` doesn't match `API_TOKEN` in `.env` |
+| SSID doesn't change | `wlan_id` in `SERVICES_CONFIG` is blank or wrong — rerun Step 1 |
+| Sinric connects but no messages routed | `device_id` in `SERVICES_CONFIG` doesn't match Sinric portal UUID |
+| Alexa says device not responding | Check `docker compose logs sinric-bridge`; verify Sinric Pro skill is linked |
+| Service starts but no handlers registered | `SERVICES_CONFIG` is empty or invalid JSON — check for syntax errors |

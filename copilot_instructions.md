@@ -92,11 +92,11 @@ Edit `.env` with your values:
 UNIFI_HOST=192.168.1.1
 UNIFI_API_KEY=your-unifi-api-key
 UNIFI_SITE_ID=paste-site-id-here
-UNIFI_WLAN_ID=paste-wlan-id-here
 
 SINRIC_APP_KEY=paste-app-key-here
 SINRIC_APP_SECRET=paste-app-secret-here
-SINRIC_DEVICE_ID=paste-device-id-here
+
+SERVICES_CONFIG=[{"device_id":"paste-sinric-device-id-here","type":"wifi_ssid","name":"WiFi Toggle","config":{"wlan_id":"paste-unifi-wlan-id-here"}}]
 
 API_TOKEN=generate-a-strong-token
 ```
@@ -113,11 +113,11 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ## Step 4 – Deploy the Container
 
 ```bash
-cd /volume1/docker/home-automation/docker
+cd /volume1/docker/sinric-bridge
 docker compose up -d
 
 # Verify:
-docker compose logs -f wifi-toggle
+docker compose logs -f sinric-bridge
 # Look for: "Starting Sinric Pro WebSocket client"
 ```
 
@@ -201,7 +201,7 @@ Say **"Alexa, WiFi off"** — the SSID should disable within ~1 second.
 
 | Symptom | Check |
 |---|---|
-| "Starting Sinric Pro WebSocket client" not in logs | `SINRIC_APP_KEY`, `SINRIC_APP_SECRET`, `SINRIC_DEVICE_ID` missing or empty in `.env` |
+| "Starting Sinric Pro WebSocket client" not in logs | `SINRIC_APP_KEY` or `SINRIC_APP_SECRET` missing, or `SERVICES_CONFIG` is empty/invalid JSON |
 | Sinric connects but Alexa doesn't find device | Re-run Alexa device discovery; ensure Sinric Pro skill is enabled |
 | Alexa says "WiFi Toggle is not responding" | Check container is running: `docker compose ps`; check logs for errors |
 | SSID doesn't toggle | `UNIFI_WLAN_ID` is blank or wrong — re-run the WLAN ID lookup |

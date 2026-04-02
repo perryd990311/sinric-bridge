@@ -1,5 +1,7 @@
 # Home Automation – WiFi SSID Voice Control
 
+[![CI](https://github.com/YOUR_USERNAME/home-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/home-automation/actions/workflows/ci.yml)
+
 ## Goal
 Use an Alexa voice command to toggle a WiFi SSID on/off via the UniFi gateway API.
 
@@ -45,21 +47,27 @@ Use an Alexa voice command to toggle a WiFi SSID on/off via the UniFi gateway AP
 ## Folder Structure
 ```
 home-automation/
-├── copilot_instructions.md  # Full Sinric Pro setup guide ← START HERE
+├── README.md
+├── RELEASE_NOTES.md
+├── copilot_instructions.md      # Full Sinric Pro setup guide ← START HERE
 ├── docs/
-│   ├── setup.md             # Step-by-step setup
-│   └── middleware-comparison.md
-├── python-service/          # Python FastAPI + Sinric Pro WebSocket client
-├── docker/                  # docker-compose.yml + .env.example
-├── unifi/                   # UniFi API reference
-└── alexa/                   # Alexa Routine setup
+│   └── setup.md                 # Step-by-step setup
+├── python-service/              # Python FastAPI + Sinric Pro WebSocket client
+│   ├── main.py
+│   ├── services/                # Service handlers (WiFiSSIDHandler, …)
+│   ├── core/                    # Shared utilities
+│   ├── Dockerfile
+│   └── requirements.txt
+├── docker/                      # Reference docker-compose.yml + .env.example
+├── unifi/                       # UniFi API reference
+└── alexa/                       # Alexa Routine setup guide
 ```
 
 ## Quick Start
 1. Read [`copilot_instructions.md`](copilot_instructions.md) – the complete setup guide
-2. Create a free Sinric Pro account and virtual switch
-3. Copy `docker/.env.example` → `docker/.env` and fill in secrets
-4. Deploy: `cd docker && docker compose up -d`
+2. Create a free [Sinric Pro](https://portal.sinric.pro) account and virtual **Switch** device
+3. Copy `docker/.env.example` → `.env`, fill in your secrets and set `SERVICES_CONFIG`
+4. Deploy on Synology: `cd /volume1/docker/sinric-bridge && docker compose up -d`
 5. Link Sinric Pro to Alexa, create a Routine
 6. Say **"Alexa, WiFi off"**
 
